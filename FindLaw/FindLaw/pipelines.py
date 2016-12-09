@@ -1,0 +1,95 @@
+# -*- coding: utf-8 -*-
+
+# Define your item pipelines here
+#
+# Don't forget to add your pipeline to the ITEM_PIPELINES setting
+# See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
+import MySQLdb
+import MySQLdb.cursors
+import uuid
+import logging
+from FindLaw.spiders.ParseLaw import ParseLaw
+from scrapy.exceptions import CloseSpider
+from pybloomfilter import BloomFilter
+import os
+import sys
+
+
+
+reload(sys)
+sys.setdefaultencoding("utf-8")
+
+
+class FindlawPipeline(object):
+    logger = logging.getLogger("FindlawPipelineLogger")
+
+    bloom_file_name = 'BloomFilter.bloom'
+    bloom_file = None
+
+    def __init__(self):
+        config = {'host': '123.56.130.166', 'user': 'root', 'passwd': '', 'port': 3306,
+                  'db': '', 'charset': 'utf8'}
+        try:
+            self.cnn = MySQLdb.connect(**config)
+            if self.cnn is not None:
+                print("connect successfully!")
+                self.logger.warning("------connect mysql successfully!------")
+            self.cursor = self.cnn.cursor()
+            # 清空表：
+            # self.cursor.execute("truncate table tlaws;")
+            # self.cnn.commit()
+        except MySQLdb.Error as e:
+            # print('connect fails!{}'.format(e))
+            self.logger.error("connect fails,  " + format(e))
+
+        bloom_file_exist = os.path.exists(self.bloom_file_name)
+        if bloom_file_exist:
+            self.bloom_file = BloomFilter.open(self.bloom_file_name)
+        else:
+            self.bloom_file = BloomFilter(capacity=300000, error_rate=0.0001, filename=self.bloom_file_name)
+
+    def process_item(self, item, spider):
+        str_id = self.generate_id()
+        try:
+            n = self.cursor.execute(
+                "INSERT INTO law_regulation(ID, NAME, Promulgation_Unit, Document_Number, Date_of_Issue, Execution_Date, Timeliness, Effect_Level, Content, Content_Tag, Classification, Province, City, Pub)  "
+                "VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    str_id,
+                    item['name'],
+                    item['promulgation_unit'],
+                    item['document_number'],
+                    item['date_of_issue'],
+                    item['execution_date'],
+                    item['timeliness'],
+                    item['effect_level'],
+                    item['content'],
+                    item['content_tag'],
+                    item['type'],
+                    item['province'],
+                    item['city'],
+                    item['pub'],
+                ))
+            self.cnn.commit()
+            if n > 0:
+                # 如果插入数据成功，则将该页面的url写入bloomfilter
+                # bloom_file_exist = os.path.exists('BloomFilter.bloom')
+                # if bloom_file_exist:
+                #     bf = BloomFilter.open('BloomFilter.bloom')
+                # else:
+                #     bf = BloomFilter(capacity=300000, error_rate=0.0001, filename='BloomFilter.bloom')
+                self.bloom_file.add(item['url'])
+                self.logger.warning('---<Get>' + item['url'] + '---' + ', <insert result>n=%s', str(n))
+            else:
+                self.logger.error('---<Get>' + item['url'] + '---' + ', <insert result>n=%s', str(n))
+        except MySQLdb.Error as e:
+            print('insert datas error!{}'.format(e))
+            self.logger.error("ERROR: ---<GET>" + item['url'] + '---' + format(e))
+            sys.exit()
+        return item
+
+    def generate_id(self):
+        uuid_str_ori = str(uuid.uuid4())
+        uuid_str = uuid_str_ori.split('-')
+        uuid_str = ''.join(uuid_str)
+        return uuid_str
